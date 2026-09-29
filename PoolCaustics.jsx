@@ -436,8 +436,8 @@ export default function PoolCaustics({
   exposure = 1,
   grain = 0.045,
   lightAngle = 21.7, // degrees from vertical (the angle used in the video)
-  floorColor = "#372f2d",
-  lightColor = "#fcf5f0",
+  floorColor = "#008DB9",
+  lightColor = "#00BBFF",
   seed = 7,
   quality = "high", // "low" | "medium" | "high"
   paused = false,
