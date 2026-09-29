@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * PoolCaustics — pool-floor light with a touch of rainbow (WebGL2)
@@ -29,6 +29,11 @@ const QUALITY = {
   medium: { cellPx: 3, samples: 6, dpr: 1.25 },
   high: { cellPx: 2.5, samples: 8, dpr: 1.5 },
 };
+
+// Mesh cells × wavelengths drawn per frame. Phones (iOS especially) drop the
+// WebGL context when a frame takes too long, so they get a smaller budget.
+const WORK_BUDGET = { desktop: 6e6, mobile: 1.2e6 };
+const LOD_MAX = 3; // how far the adaptive step-down may coarsen the mesh
 
 /* ── shaders ─────────────────────────────────────────────────────────────── */
 
@@ -206,17 +211,22 @@ function hexToLinear(hex) {
 
 /* ── renderer ────────────────────────────────────────────────────────────── */
 
-function start(canvas, propsRef, q) {
+function start(canvas, propsRef, q, onError) {
   const gl = canvas.getContext("webgl2", {
     antialias: false, alpha: false, depth: false, stencil: false, powerPreference: "high-performance",
   });
-  if (!gl) return () => {};
+  if (!gl) { onError("WebGL2 is not available"); return () => {}; }
   const f32 = !!gl.getExtension("EXT_color_buffer_float");
-  if (!f32 && !gl.getExtension("EXT_color_buffer_half_float")) return () => {};
+  if (!f32 && !gl.getExtension("EXT_color_buffer_half_float")) { onError("float render targets are not supported"); return () => {}; }
 
-  let dispose = init();
-  const onLost = (e) => e.preventDefault();
-  const onRestored = () => { dispose(); dispose = init(); };
+  const mobile = !!window.matchMedia?.("(pointer: coarse)").matches;
+  const budget = mobile ? WORK_BUDGET.mobile : WORK_BUDGET.desktop;
+  let lod = 1; // >1 coarsens the mesh; raised when frames run slow or the context is lost
+
+  const safeInit = () => { try { return init(); } catch (e) { onError(e.message || String(e)); return () => {}; } };
+  let dispose = safeInit();
+  const onLost = (e) => { e.preventDefault(); lod = Math.min(LOD_MAX, lod * 1.5); };
+  const onRestored = () => { dispose(); dispose = safeInit(); };
   canvas.addEventListener("webglcontextlost", onLost);
   canvas.addEventListener("webglcontextrestored", onRestored);
   return () => {
@@ -282,12 +292,18 @@ function start(canvas, propsRef, q) {
     const waveArr = new Float32Array(NW * 4);
     const phaseArr = new Float32Array(NW);
 
-    let W = 0, H = 0, nx = 0, ny = 0, idxCount = 0, dpr = 1;
+    let W = 0, H = 0, nx = 0, ny = 0, idxCount = 0, dpr = 1, meshKey = "";
     let accumTex = null, accumFbo = null, surfTex = null, surfFbo = null;
     let waves = null, waveSeed = null;
     let sig = "", t = 0, last = performance.now(), raf = 0, visible = true, needsResize = true;
 
     const marginOf = (p) => 0.02 + p.depth * (0.08 * p.ripple + 0.0016 * p.dispersion);
+
+    // enough wavelengths that neighbouring copies of a caustic line sit ≲2px apart
+    const samplesFor = (p) => {
+      const spreadPx = p.dispersion * p.depth * 0.0028 * PX_PER_METER * p.zoom * 1.6;
+      return Math.min(MAX_S, Math.max(q.samples, Math.ceil(spreadPx / 2)));
+    };
 
     function resize() {
       needsResize = false;
@@ -295,14 +311,18 @@ function start(canvas, propsRef, q) {
       dpr = Math.min(window.devicePixelRatio || 1, q.dpr);
       const cw = Math.round(canvas.clientWidth * dpr), ch = Math.round(canvas.clientHeight * dpr);
       if (cw < 2 || ch < 2) return false;
-      if (cw === W && ch === H) return true;
-      W = cw; H = ch; canvas.width = W; canvas.height = H;
 
       const devPpm = PX_PER_METER * p.zoom * dpr;
       const m2 = 2 * marginOf(p) * devPpm;
-      const cellPx = Math.max(q.cellPx, Math.sqrt(((W + m2) * (H + m2)) / 450000)); // cap ~450k cells
-      nx = Math.max(8, Math.round((W + m2) / cellPx));
-      ny = Math.max(8, Math.round((H + m2) / cellPx));
+      const maxCells = Math.min(450000, budget / samplesFor(p));
+      const cellPx = Math.max(q.cellPx * lod, Math.sqrt(((cw + m2) * (ch + m2)) / maxCells));
+      const cx = Math.max(8, Math.round((cw + m2) / cellPx));
+      const cy = Math.max(8, Math.round((ch + m2) / cellPx));
+      const key = [cw, ch, cx, cy].join();
+      if (key === meshKey) return true;
+      meshKey = key;
+      W = cw; H = ch; nx = cx; ny = cy;
+      canvas.width = W; canvas.height = H;
 
       [accumTex, surfTex].forEach((x) => x && gl.deleteTexture(x));
       [accumFbo, surfFbo].forEach((x) => x && gl.deleteFramebuffer(x));
@@ -338,9 +358,7 @@ function start(canvas, propsRef, q) {
         phaseArr[i] = (((w.phi - w.omega * p.speed * t) % TAU) + TAU) % TAU;
       });
 
-      // enough wavelengths that neighbouring copies of a caustic line sit ≲2px apart
-      const spreadPx = p.dispersion * p.depth * 0.0028 * PX_PER_METER * p.zoom * 1.6;
-      setSamples(Math.min(MAX_S, Math.max(q.samples, Math.ceil(spreadPx / 2))));
+      setSamples(samplesFor(p));
 
       const n0 = waterIor(0.55);
       spectrum.forEach((s, i) => (iorArr[i] = n0 + p.dispersion * (waterIor(s.um) - n0)));
@@ -389,20 +407,37 @@ function start(canvas, propsRef, q) {
 
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)");
 
+    // Frame pacing: rAF slows down when the GPU can't keep up. Compare the
+    // average frame time to the fastest one seen (≈ the display's refresh, so a
+    // 30 fps Low Power Mode cap isn't mistaken for load), or to ~22 fps outright,
+    // and coarsen the mesh when we're sustainedly behind.
+    let minDt = Infinity, avgDt = 0, frames = 0;
+    function pace(ms) {
+      if (++frames < 10 || ms > 1000) return; // skip warm-up and tab-switch gaps
+      minDt = Math.max(4, Math.min(minDt, ms));
+      avgDt = avgDt ? avgDt * 0.92 + ms * 0.08 : ms;
+      if (frames > 60 && (avgDt > minDt * 1.6 || avgDt > 45) && lod < LOD_MAX) {
+        lod = Math.min(LOD_MAX, lod * 1.25);
+        needsResize = true; frames = 0; avgDt = 0;
+      }
+    }
+
     function tick(now) {
       raf = 0;
       if (!visible) return;
       const p = propsRef.current;
+      if (samplesFor(p) !== nSamples) needsResize = true; // keep cells × samples within budget
       if (needsResize && !resize() && !W) { raf = requestAnimationFrame(tick); return; }
       const animate = !p.paused && !(reduced && reduced.matches);
-      const dt = Math.min(0.05, (now - last) / 1000);
+      const ms = now - last;
+      const dt = Math.min(0.05, Math.max(0, ms / 1000));
       last = now;
-      if (animate) t += dt;
-      const s = animate ? "" : JSON.stringify(p) + W + "x" + H; // when frozen only redraw on changes
+      if (animate) { t += dt; pace(ms); }
+      const s = animate ? "" : JSON.stringify(p) + W + "x" + H + "/" + nx; // when frozen only redraw on changes
       if (animate || s !== sig) { sig = s; draw(now); }
       raf = requestAnimationFrame(tick);
     }
-    const kick = () => { if (!raf) { last = performance.now(); raf = requestAnimationFrame(tick); } };
+    const kick = () => { if (!raf) { last = performance.now(); frames = 0; raf = requestAnimationFrame(tick); } };
 
     t = 40; // start mid-motion so a frozen frame still looks good
     const ro = new ResizeObserver(() => { needsResize = true; sig = ""; kick(); });
@@ -445,9 +480,13 @@ export default function PoolCaustics({
 }) {
   const canvasRef = useRef(null);
   const propsRef = useRef({});
+  const [error, setError] = useState(null);
   propsRef.current = { dispersion, depth, speed, zoom, ripple, exposure, grain, lightAngle, floorColor, lightColor, seed, paused };
 
-  useEffect(() => start(canvasRef.current, propsRef, QUALITY[quality] || QUALITY.medium), [quality]);
+  useEffect(() => {
+    const onError = (msg) => { console.error("PoolCaustics:", msg); setError(msg); };
+    return start(canvasRef.current, propsRef, QUALITY[quality] || QUALITY.medium, onError);
+  }, [quality]);
 
   return (
     <div
@@ -460,6 +499,11 @@ export default function PoolCaustics({
         aria-hidden="true"
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: -1, pointerEvents: "none", display: "block" }}
       />
+      {error && (
+        <div style={{ position: "absolute", left: 8, bottom: 8, font: "12px/1.3 system-ui, sans-serif", color: "#fff", opacity: 0.7 }}>
+          caustics unavailable: {error}
+        </div>
+      )}
       {children}
     </div>
   );

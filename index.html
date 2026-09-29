@@ -20,6 +20,19 @@
 </head>
 <body>
   <div id="root"></div>
+  <script>
+    // Surface load failures on the page (there's no console on a phone).
+    function showError(msg) {
+      if (window.__started) return; // only startup failures; the app reports its own
+      document.getElementById("root").innerHTML =
+        '<p style="color:#fff;font:14px/1.4 system-ui,sans-serif;padding:16px;margin:0"></p>';
+      document.querySelector("#root p").textContent = "Couldn't start: " + msg;
+    }
+    window.addEventListener("error", (e) => showError(e.message));
+    window.addEventListener("unhandledrejection", (e) => showError(String(e.reason && e.reason.message || e.reason)));
+    if (!(HTMLScriptElement.supports && HTMLScriptElement.supports("importmap")))
+      showError("this browser doesn't support import maps (iOS 16.4+ / Safari 16.4+ needed)");
+  </script>
   <script type="module">
     // No build step: fetch the .jsx, compile it in the browser, import it.
     const src = await (await fetch("./PoolCaustics.jsx")).text();
@@ -36,6 +49,7 @@
     createRoot(document.getElementById("root")).render(
       h(PoolCaustics, { style: { height: "100vh" } })
     );
+    window.__started = true;
   </script>
 </body>
 </html>
