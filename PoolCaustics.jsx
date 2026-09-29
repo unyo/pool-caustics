@@ -439,7 +439,7 @@ export default function PoolCaustics({
   floorColor = "#008DB9",
   lightColor = "#00BBFF",
   seed = 7,
-  quality = "high", // "low" | "medium" | "high"
+  quality = "medium", // "low" | "medium" | "high"
   paused = false,
   ...rest
 }) {
