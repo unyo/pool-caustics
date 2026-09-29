@@ -428,10 +428,10 @@ export default function PoolCaustics({
   children,
   className,
   style,
-  dispersion = 4, // 1 = real water · ~4 = slight rainbow · 20 = the video's "exaggerated"
+  dispersion = 6, // 1 = real water · ~4 = slight rainbow · 20 = the video's "exaggerated"
   depth = 0.95, // metres to the floor: shallow = soft glow, ~1 = sharp, deeper = tangled
-  speed = 0.2, // 1 = real ripple speed (frantic); ~0.2 is calm
-  zoom = 1, // >1 zooms in
+  speed = 0.05, // 1 = real ripple speed (frantic); ~0.2 is calm
+  zoom = 1.618, // >1 zooms in
   ripple = 1, // wave strength
   exposure = 1,
   grain = 0.045,
@@ -439,7 +439,7 @@ export default function PoolCaustics({
   floorColor = "#372f2d",
   lightColor = "#fcf5f0",
   seed = 7,
-  quality = "medium", // "low" | "medium" | "high"
+  quality = "high", // "low" | "medium" | "high"
   paused = false,
   ...rest
 }) {
