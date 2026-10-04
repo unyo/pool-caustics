@@ -3,9 +3,18 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#008DB9" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Pool" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icon-180.png" />
+  <link rel="icon" type="image/png" href="./icon-192.png" />
   <title>Pool Caustics</title>
   <style>
-    html, body, #root { margin: 0; height: 100%; background: #372f2d; }
+    html, body, #root { margin: 0; height: 100%; background: #008DB9; }
+    html, body { overflow: hidden; overscroll-behavior: none; }
   </style>
   <script type="importmap">
     {
@@ -34,7 +43,9 @@
     const { createRoot } = await import("react-dom/client");
 
     createRoot(document.getElementById("root")).render(
-      h(PoolCaustics, { style: { height: "100vh" } })
+      // Pinned to the screen and sized to the largest viewport so it runs edge to
+      // edge, under the notch/Dynamic Island and home indicator (viewport-fit=cover).
+      h(PoolCaustics, { style: { position: "fixed", top: 0, left: 0, right: 0, height: "100lvh" } })
     );
   </script>
 </body>
