@@ -42,9 +42,9 @@
     // ?quality=high|medium|low ("med" works too); defaults to medium.
     const q = (params.get("quality") || "").toLowerCase();
     const quality = { high: "high", medium: "medium", med: "medium", low: "low" }[q] || "medium";
-    // ?angle=30: light angle in degrees from straight down, clamped to 0-80.
+    // ?angle=30: light angle in degrees from straight down (any number).
     const angle = parseFloat(params.get("angle"));
-    const lightAngle = Number.isFinite(angle) ? Math.min(80, Math.max(0, angle)) : 21.7;
+    const lightAngle = Number.isFinite(angle) ? angle : 21.7;
     document.documentElement.style.setProperty("--bg", floorColor);
     document.querySelector('meta[name="theme-color"]').content = floorColor;
 
