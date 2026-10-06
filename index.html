@@ -13,7 +13,7 @@
   <link rel="icon" type="image/png" href="./icon-192.png" />
   <title>Pool Caustics</title>
   <style>
-    html, body, #root { margin: 0; height: 100%; background: #008DB9; }
+    html, body, #root { margin: 0; height: 100%; background: var(--bg, #008DB9); }
     html, body { overflow: hidden; overscroll-behavior: none; }
   </style>
   <script type="importmap">
@@ -30,6 +30,18 @@
 <body>
   <div id="root"></div>
   <script type="module">
+    // Colors from the URL, e.g. ?bg=008DB9&fg=00BBFF (hex, "#" optional).
+    // bg is the pool floor, fg the caustic light. Anything else is ignored.
+    const params = new URLSearchParams(location.search);
+    const hex = (k) => {
+      const v = (params.get(k) || "").trim().replace(/^#/, "");
+      return /^([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v) ? "#" + v : undefined;
+    };
+    const floorColor = hex("bg") || "#008DB9";
+    const lightColor = hex("fg") || "#00BBFF";
+    document.documentElement.style.setProperty("--bg", floorColor);
+    document.querySelector('meta[name="theme-color"]').content = floorColor;
+
     // No build step: fetch the .jsx, compile it in the browser, import it.
     const src = await (await fetch("./PoolCaustics.jsx")).text();
     const { code } = Babel.transform(src, {
@@ -45,7 +57,7 @@
     createRoot(document.getElementById("root")).render(
       // Pinned to the screen and sized to the largest viewport so it runs edge to
       // edge, under the notch/Dynamic Island and home indicator (viewport-fit=cover).
-      h(PoolCaustics, { style: { position: "fixed", top: 0, left: 0, right: 0, height: "100lvh" } })
+      h(PoolCaustics, { floorColor, lightColor, style: { position: "fixed", top: 0, left: 0, right: 0, height: "100lvh" } })
     );
   </script>
 </body>
