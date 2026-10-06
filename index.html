@@ -30,7 +30,7 @@
 <body>
   <div id="root"></div>
   <script type="module">
-    // Colors from the URL, e.g. ?bg=008DB9&fg=00BBFF (hex, "#" optional).
+    // Colors from the URL, e.g. ?bg=008DB9&fg=00BBFF&quality=high (hex, "#" optional).
     // bg is the pool floor, fg the caustic light. Anything else is ignored.
     const params = new URLSearchParams(location.search);
     const hex = (k) => {
@@ -39,6 +39,9 @@
     };
     const floorColor = hex("bg") || "#008DB9";
     const lightColor = hex("fg") || "#00BBFF";
+    // ?quality=high|medium|low ("med" works too); defaults to medium.
+    const q = (params.get("quality") || "").toLowerCase();
+    const quality = { high: "high", medium: "medium", med: "medium", low: "low" }[q] || "medium";
     document.documentElement.style.setProperty("--bg", floorColor);
     document.querySelector('meta[name="theme-color"]').content = floorColor;
 
@@ -57,7 +60,7 @@
     createRoot(document.getElementById("root")).render(
       // Pinned to the screen and sized to the largest viewport so it runs edge to
       // edge, under the notch/Dynamic Island and home indicator (viewport-fit=cover).
-      h(PoolCaustics, { floorColor, lightColor, style: { position: "fixed", top: 0, left: 0, right: 0, height: "100lvh" } })
+      h(PoolCaustics, { floorColor, lightColor, quality, style: { position: "fixed", top: 0, left: 0, right: 0, height: "100lvh" } })
     );
   </script>
 </body>
