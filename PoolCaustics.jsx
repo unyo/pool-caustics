@@ -17,12 +17,16 @@ import { useEffect, useRef } from "react";
  *      each one onto the floor, and add them up. Where they overlap it is
  *      white; only the fringes split into a rainbow.  `dispersion` scales that
  *      spread: 1 = real water, 20 = the "exaggerated" look from the video.
+ *   4. The sun is a disc (~0.53°), not a point, so every caustic line is
+ *      smeared by depth × that angle. We blur the floor by exactly that much,
+ *      which also lets the brightest folds keep their real intensity.
  * ───────────────────────────────────────────────────────────────────────────── */
 
-const NW = 16; // surface wave components
+const NW = 24; // surface wave components
 const MAX_S = 24; // max spectral samples (grows with `dispersion` to keep the rainbow smooth)
 const PX_PER_METER = 750; // CSS px per metre of pool floor at zoom = 1
 const TAU = Math.PI * 2;
+const SUN_DEG = 0.53; // angular diameter of the sun
 
 const QUALITY = {
   low: { cellPx: 4, samples: 5, dpr: 1 },
@@ -110,7 +114,23 @@ void main(){
   o = vec4(vW * min(I, uMaxI), 1.0);
 }`;
 
-// Pass 3: tone-map to a dark floor + light, soft glow, film grain.
+// Pass 3: blur by the sun's disc, as two 1-D Gaussian passes (sigma = disc radius / 2).
+const FS_BLUR = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+uniform vec2 uStep;             // one tap (0.6 sigma), in uv
+out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy / vec2(textureSize(uSrc, 0));
+  vec3 c = texture(uSrc, uv).rgb * .2408;
+  c += (texture(uSrc, uv + uStep).rgb       + texture(uSrc, uv - uStep).rgb)       * .2012;
+  c += (texture(uSrc, uv + uStep * 2.).rgb  + texture(uSrc, uv - uStep * 2.).rgb)  * .1172;
+  c += (texture(uSrc, uv + uStep * 3.).rgb  + texture(uSrc, uv - uStep * 3.).rgb)  * .0477;
+  c += (texture(uSrc, uv + uStep * 4.).rgb  + texture(uSrc, uv - uStep * 4.).rgb)  * .0135;
+  o = vec4(c, 1.0);
+}`;
+
+// Pass 4: tone-map to a dark floor + light, soft glow, film grain.
 const FS_POST = `#version 300 es
 precision highp float;
 uniform sampler2D uAccum;
@@ -131,15 +151,11 @@ void main(){
   vec2 uv = gl_FragCoord.xy / uRes;
   vec2 px = 1.0 / uRes;
   vec3 c = texture(uAccum, uv).rgb;
-  vec3 near = (texture(uAccum, uv + px * vec2( .75,  .75)).rgb
-             + texture(uAccum, uv + px * vec2(-.75,  .75)).rgb
-             + texture(uAccum, uv + px * vec2( .75, -.75)).rgb
-             + texture(uAccum, uv + px * vec2(-.75, -.75)).rgb) * .25;
-  vec3 far  = (texture(uAccum, uv + px * vec2( 3., 0.)).rgb
-             + texture(uAccum, uv + px * vec2(-3., 0.)).rgb
-             + texture(uAccum, uv + px * vec2(0.,  3.)).rgb
-             + texture(uAccum, uv + px * vec2(0., -3.)).rgb) * .25;
-  c = mix(c, near, .3) + far * .06;
+  vec3 far  = (texture(uAccum, uv + px * vec2( 6., 0.)).rgb    // light scattered in the water
+             + texture(uAccum, uv + px * vec2(-6., 0.)).rgb
+             + texture(uAccum, uv + px * vec2(0.,  6.)).rgb
+             + texture(uAccum, uv + px * vec2(0., -6.)).rgb) * .25;
+  c += far * .06;
 
   vec3 t = pow(1.0 - exp(-c * uGain), vec3(uContrast));   // per-channel: hot cores burn to white
   vec3 col = pow(uFloor + uLightC * t, vec3(1.0 / 2.2));
@@ -242,11 +258,14 @@ function start(canvas, propsRef, q) {
 
     const pSurf = program(VS_FULL, FS_SURFACE);
     const pCaus = program(VS_CAUSTIC, FS_CAUSTIC);
+    const pBlur = program(VS_FULL, FS_BLUR);
     const pPost = program(VS_FULL, FS_POST);
     const uS = uniforms(pSurf, ["uWave", "uPhase", "uSize", "uGrid"]);
     const uC = uniforms(pCaus, ["uSurf", "uCells", "uSize", "uView", "uDepth", "uLight", "uIor", "uIor0", "uWeight", "uPixArea", "uMaxI"]);
+    const uB = uniforms(pBlur, ["uSrc", "uStep"]);
     const uP = uniforms(pPost, ["uAccum", "uRes", "uFloor", "uLightC", "uGain", "uContrast", "uGrain", "uFrame"]);
     gl.useProgram(pCaus); gl.uniform1i(uC.uSurf, 0);
+    gl.useProgram(pBlur); gl.uniform1i(uB.uSrc, 0);
     gl.useProgram(pPost); gl.uniform1i(uP.uAccum, 0);
 
     const vao = gl.createVertexArray();
@@ -283,7 +302,7 @@ function start(canvas, propsRef, q) {
     const phaseArr = new Float32Array(NW);
 
     let W = 0, H = 0, nx = 0, ny = 0, idxCount = 0, dpr = 1;
-    let accumTex = null, accumFbo = null, surfTex = null, surfFbo = null;
+    let accumTex = null, accumFbo = null, blurTex = null, blurFbo = null, surfTex = null, surfFbo = null;
     let waves = null, waveSeed = null;
     let sig = "", t = 0, last = performance.now(), raf = 0, visible = true, needsResize = true;
 
@@ -304,10 +323,12 @@ function start(canvas, propsRef, q) {
       nx = Math.max(8, Math.round((W + m2) / cellPx));
       ny = Math.max(8, Math.round((H + m2) / cellPx));
 
-      [accumTex, surfTex].forEach((x) => x && gl.deleteTexture(x));
-      [accumFbo, surfFbo].forEach((x) => x && gl.deleteFramebuffer(x));
+      [accumTex, blurTex, surfTex].forEach((x) => x && gl.deleteTexture(x));
+      [accumFbo, blurFbo, surfFbo].forEach((x) => x && gl.deleteFramebuffer(x));
       accumTex = tex(W, H, gl.RGBA16F, gl.HALF_FLOAT, gl.LINEAR);
       accumFbo = fbo(accumTex);
+      blurTex = tex(W, H, gl.RGBA16F, gl.HALF_FLOAT, gl.LINEAR);
+      blurFbo = fbo(blurTex);
       surfTex = tex(nx + 1, ny + 1, f32 ? gl.RGBA32F : gl.RGBA16F, f32 ? gl.FLOAT : gl.HALF_FLOAT, gl.NEAREST);
       surfFbo = fbo(surfTex);
 
@@ -369,11 +390,25 @@ function start(canvas, propsRef, q) {
       gl.uniform2f(uC.uSize, size[0], size[1]); gl.uniform2f(uC.uView, Wm, Hm);
       gl.uniform1f(uC.uDepth, p.depth); gl.uniform3f(uC.uLight, ...light);
       gl.uniform1fv(uC.uIor, iorArr); gl.uniform1f(uC.uIor0, n0); gl.uniform3fv(uC.uWeight, weights);
-      gl.uniform1f(uC.uPixArea, (Wm / W) * (Hm / H)); gl.uniform1f(uC.uMaxI, 14);
+      gl.uniform1f(uC.uPixArea, (Wm / W) * (Hm / H)); gl.uniform1f(uC.uMaxI, 60);
       gl.drawElementsInstanced(gl.TRIANGLES, idxCount, gl.UNSIGNED_INT, 0, spectrum.length);
       gl.disable(gl.BLEND);
 
-      // 3) grade to screen
+      // 3) soften by the sun's disc: accum -> blur (x) -> accum (y)
+      // A disc's hard edge reads sharper than a Gaussian of equal variance (r/2), so use a bit less.
+      const sunR = p.depth * Math.tan((SUN_DEG * Math.PI) / 360) * (W / Wm); // device px
+      const step = 0.6 * Math.max(0.4, 0.35 * sunR);
+      gl.useProgram(pBlur);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, blurFbo);
+      gl.bindTexture(gl.TEXTURE_2D, accumTex);
+      gl.uniform2f(uB.uStep, step / W, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, accumFbo);
+      gl.bindTexture(gl.TEXTURE_2D, blurTex);
+      gl.uniform2f(uB.uStep, 0, step / H);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      // 4) grade to screen
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, W, H);
       gl.useProgram(pPost);
@@ -381,7 +416,7 @@ function start(canvas, propsRef, q) {
       gl.uniform2f(uP.uRes, W, H);
       gl.uniform3fv(uP.uFloor, hexToLinear(p.floorColor));
       gl.uniform3fv(uP.uLightC, hexToLinear(p.lightColor));
-      gl.uniform1f(uP.uGain, 0.46 * p.exposure); gl.uniform1f(uP.uContrast, 1.95);
+      gl.uniform1f(uP.uGain, 0.5 * p.exposure); gl.uniform1f(uP.uContrast, 1.95);
       gl.uniform1f(uP.uGrain, p.grain);
       gl.uniform1f(uP.uFrame, (Math.floor(now / 42) % 997) * 17.31);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -414,9 +449,9 @@ function start(canvas, propsRef, q) {
     return () => {
       cancelAnimationFrame(raf); raf = 0; visible = false;
       ro.disconnect(); io.disconnect();
-      [accumTex, surfTex].forEach((x) => x && gl.deleteTexture(x));
-      [accumFbo, surfFbo].forEach((x) => x && gl.deleteFramebuffer(x));
-      [pSurf, pCaus, pPost].forEach((x) => gl.deleteProgram(x));
+      [accumTex, blurTex, surfTex].forEach((x) => x && gl.deleteTexture(x));
+      [accumFbo, blurFbo, surfFbo].forEach((x) => x && gl.deleteFramebuffer(x));
+      [pSurf, pCaus, pBlur, pPost].forEach((x) => gl.deleteProgram(x));
       gl.deleteBuffer(ibo); gl.deleteVertexArray(vao);
     };
   }
@@ -428,7 +463,7 @@ export default function PoolCaustics({
   children,
   className,
   style,
-  dispersion = 6, // 1 = real water · ~4 = slight rainbow · 20 = the video's "exaggerated"
+  dispersion = 3, // 1 = real water · ~4 = slight rainbow · 20 = the video's "exaggerated"
   depth = 0.95, // metres to the floor: shallow = soft glow, ~1 = sharp, deeper = tangled
   speed = 0.05, // 1 = real ripple speed (frantic); ~0.2 is calm
   zoom = 1.618, // >1 zooms in
